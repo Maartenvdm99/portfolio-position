@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import date, time, timedelta
 
@@ -81,9 +82,43 @@ def load_excel():
 
 raw = load_excel()
 
-# ── Check if selected date matches the Excel data date ────────────────────
+# ── Check if selected date has data (Excel date or generated dates) ────────
 excel_date = date(2026, 3, 17)  # the date in the example file
-has_data = selected_date == excel_date
+supported_dates = {date(2026, 3, 17), date(2026, 3, 18)}
+has_data = selected_date in supported_dates
+
+
+def generate_random_data(n_rows: int, seed: int) -> dict:
+    """Generate realistic random portfolio data for n_rows PTUs."""
+    rng = np.random.default_rng(seed)
+    # Hour-of-day pattern: higher during day, lower at night
+    hours = np.array([i // 4 for i in range(n_rows)])
+    day_factor = np.where((hours >= 7) & (hours <= 20), 1.0, 0.4)
+
+    wind_da = rng.uniform(400, 700, n_rows) * day_factor
+    wind_real = wind_da + rng.normal(0, 30, n_rows)
+    nowcast_da = rng.uniform(50, 200, n_rows) * day_factor
+    nowcast_real = nowcast_da + rng.normal(0, 15, n_rows)
+    largepv_da = rng.uniform(30, 150, n_rows) * np.where((hours >= 6) & (hours <= 19), 1.0, 0.0)
+    largepv_real = largepv_da + rng.normal(0, 10, n_rows) * np.where(largepv_da > 0, 1, 0)
+    da_position = rng.uniform(-20, 20, n_rows)
+    id_trades = rng.uniform(-15, 15, n_rows)
+    flex = rng.uniform(-5, 5, n_rows)
+
+    return {
+        "ID trades": id_trades,
+        "DA position": da_position,
+        "Wind DA": wind_da,
+        "Wind realization": wind_real,
+        "Wind realization overwrite": np.zeros(n_rows),
+        "Nowcast DA sold": nowcast_da,
+        "Nowcast realization": nowcast_real,
+        "Nowcast realization overwrite": np.zeros(n_rows),
+        "LargePV DA sold": largepv_da,
+        "total largepv realization": largepv_real,
+        "total largepv realization overwrite": np.zeros(n_rows),
+        "Flex": flex,
+    }
 
 time_slots = build_time_slots(selected_date)
 ptus = list(range(1, 97))
@@ -99,14 +134,11 @@ tab_overview, tab_wind, tab_solar, tab_expost = st.tabs(
 # ── 1) Position overview ─────────────────────────────────────────────────
 with tab_overview:
     if has_data:
-        df_src = raw["Position overview"].copy()
-
         # Build a clean 96-row frame with the right column order
         df = pd.DataFrame()
         df["PTU"] = ptus
         df["Time"] = time_slots
 
-        # Raw value columns from Excel (rows 0-3 have data, rest is NaN)
         value_cols = [
             "ID trades", "DA position",
             "Wind DA", "Wind realization", "Wind realization overwrite",
@@ -114,18 +146,35 @@ with tab_overview:
             "LargePV DA sold", "total largepv realization", "total largepv realization overwrite",
             "Flex",
         ]
-        for col in value_cols:
-            if col in df_src.columns:
-                series = df_src[col].reindex(range(96))
-                df[col] = pd.to_numeric(series, errors="coerce").fillna(0).astype(float)
-            else:
-                df[col] = 0.0
 
-        # Total ID position realization (from Excel, static values)
-        if "Total ID position realization" in df_src.columns:
-            realization = df_src["Total ID position realization"].reindex(range(96))
-            df["Total ID position realization"] = pd.to_numeric(realization, errors="coerce").fillna(0).astype(float)
+        if selected_date == excel_date:
+            # Load Excel data for the first 4 PTUs, fill rest with random
+            df_src = raw["Position overview"].copy()
+            for col in value_cols:
+                if col in df_src.columns:
+                    series = df_src[col].reindex(range(96))
+                    df[col] = pd.to_numeric(series, errors="coerce").astype(float)
+                else:
+                    df[col] = np.nan
+
+            # Fill remaining PTUs (rows 4-95) with random data
+            rand = generate_random_data(96, seed=20260317)
+            for col in value_cols:
+                mask = df[col].isna()
+                df.loc[mask, col] = pd.Series(rand[col])[mask].values
+            df[value_cols] = df[value_cols].fillna(0.0)
+
+            # Total ID position realization from Excel
+            if "Total ID position realization" in df_src.columns:
+                realization = df_src["Total ID position realization"].reindex(range(96))
+                df["Total ID position realization"] = pd.to_numeric(realization, errors="coerce").fillna(0).astype(float)
+            else:
+                df["Total ID position realization"] = 0.0
         else:
+            # Fully generated day (18-3-2026)
+            rand = generate_random_data(96, seed=20260318)
+            for col in value_cols:
+                df[col] = rand[col]
             df["Total ID position realization"] = 0.0
 
         # ── Editable overwrite columns ──────────────────────────────────
@@ -234,34 +283,34 @@ with tab_overview:
 
         st.subheader("Position overview")
 
-        # Configure columns: overwrite columns are editable, rest are disabled
-        column_config = {}
-        disabled_cols = []
-        for col in display.columns:
-            if col in overwrite_cols:
-                column_config[col] = st.column_config.NumberColumn(
-                    col,
-                    format="%.1f",
-                    default=0.0,
-                )
-            else:
-                disabled_cols.append(col)
+        # Separate editor for overwrite columns
+        edit_df = pd.DataFrame({
+            "PTU": df["PTU"],
+            "Time": df["Time"],
+            "Wind realization overwrite": df["Wind realization overwrite"],
+            "Nowcast realization overwrite": df["Nowcast realization overwrite"],
+            "total largepv realization overwrite": df["total largepv realization overwrite"],
+        })
 
-        edited_display = st.data_editor(
-            display,
-            use_container_width=True,
-            height=700,
+        st.caption("Edit overwrite values below (yellow columns)")
+        edited = st.data_editor(
+            edit_df,
+            use_container_width=False,
+            height=300,
             hide_index=True,
             num_rows="fixed",
-            disabled=disabled_cols,
-            column_config=column_config,
-            key="position_editor",
+            disabled=["PTU", "Time"],
+            key="overwrite_editor",
         )
 
         # Save edits back to session state and df
         for ow_col in overwrite_col_names:
-            st.session_state[f"ow_{ow_col}"] = edited_display[ow_col].tolist()
-            df[ow_col] = edited_display[ow_col].astype(float)
+            st.session_state[f"ow_{ow_col}"] = edited[ow_col].tolist()
+            df[ow_col] = edited[ow_col].astype(float)
+            display[ow_col] = edited[ow_col].astype(float)
+
+        styled = display.style.apply(highlight_columns, axis=1).format(precision=1)
+        st.dataframe(styled, use_container_width=True, height=700, hide_index=True)
 
         # Store chart data in session state so we can render charts outside the tab
         df["Wind delta"] = df["Wind eff"] - df["Wind DA"]
@@ -275,40 +324,58 @@ with tab_overview:
             "flex": df["Flex"].tolist(),
         }
     else:
-        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
+        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026 and 18-03-2026.")
 
 # ── 2) Wind ──────────────────────────────────────────────────────────────
 with tab_wind:
     if has_data:
-        df_src = raw["Wind"].copy()
-
         df_w = pd.DataFrame()
         df_w["PTU"] = ptus
         df_w["Time"] = time_slots
 
-        for col in ["Wind DA", "Wind parks with realization", "Wind parks with no realization"]:
-            if col in df_src.columns:
-                series = df_src[col].reindex(range(96))
-                df_w[col] = pd.to_numeric(series, errors="coerce").fillna(0).astype(float)
-            else:
-                df_w[col] = 0.0
+        wind_cols = ["Wind DA", "Wind parks with realization", "Wind parks with no realization"]
 
-        # Formula: Wind total expected realization = parks with realization + parks with no realization
+        if selected_date == excel_date:
+            df_src = raw["Wind"].copy()
+            for col in wind_cols:
+                if col in df_src.columns:
+                    series = df_src[col].reindex(range(96))
+                    df_w[col] = pd.to_numeric(series, errors="coerce").astype(float)
+                else:
+                    df_w[col] = np.nan
+            # Fill remaining with random
+            rng_w = np.random.default_rng(170317)
+            hours = np.array([i // 4 for i in range(96)])
+            day_f = np.where((hours >= 7) & (hours <= 20), 1.0, 0.5)
+            rand_wind = {
+                "Wind DA": rng_w.uniform(400, 700, 96) * day_f,
+                "Wind parks with realization": rng_w.uniform(300, 600, 96) * day_f,
+                "Wind parks with no realization": rng_w.uniform(50, 150, 96) * day_f,
+            }
+            for col in wind_cols:
+                mask = df_w[col].isna()
+                df_w.loc[mask, col] = pd.Series(rand_wind[col])[mask].values
+            df_w[wind_cols] = df_w[wind_cols].fillna(0.0)
+        else:
+            rng_w = np.random.default_rng(180318)
+            hours = np.array([i // 4 for i in range(96)])
+            day_f = np.where((hours >= 7) & (hours <= 20), 1.0, 0.5)
+            df_w["Wind DA"] = rng_w.uniform(400, 700, 96) * day_f
+            df_w["Wind parks with realization"] = rng_w.uniform(300, 600, 96) * day_f
+            df_w["Wind parks with no realization"] = rng_w.uniform(50, 150, 96) * day_f
+
         df_w["Wind total expected realization"] = (
             df_w["Wind parks with realization"] + df_w["Wind parks with no realization"]
         )
-        # Formula: Wind delta = total expected - DA
         df_w["Wind delta"] = df_w["Wind total expected realization"] - df_w["Wind DA"]
 
         st.dataframe(df_w, use_container_width=True, height=700, hide_index=True)
     else:
-        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
+        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026 and 18-03-2026.")
 
 # ── 3) Solar ─────────────────────────────────────────────────────────────
 with tab_solar:
     if has_data:
-        df_src = raw["Solar"].copy()
-
         df_s = pd.DataFrame()
         df_s["PTU"] = ptus
         df_s["Time"] = time_slots
@@ -321,16 +388,51 @@ with tab_solar:
             "Nowcast DA sold",
             "Nowcast realization",
         ]
-        for col in solar_cols:
-            if col in df_src.columns:
-                series = df_src[col].reindex(range(96))
-                df_s[col] = pd.to_numeric(series, errors="coerce").fillna(0).astype(float)
-            else:
-                df_s[col] = 0.0
+
+        if selected_date == excel_date:
+            df_src = raw["Solar"].copy()
+            for col in solar_cols:
+                if col in df_src.columns:
+                    series = df_src[col].reindex(range(96))
+                    df_s[col] = pd.to_numeric(series, errors="coerce").astype(float)
+                else:
+                    df_s[col] = np.nan
+            # Fill remaining with random
+            rng_s = np.random.default_rng(170317_2)
+            hours = np.array([i // 4 for i in range(96)])
+            sun_f = np.where((hours >= 6) & (hours <= 19), 1.0, 0.0)
+            rand_solar = {
+                "LargePV DA sold": rng_s.uniform(30, 150, 96) * sun_f,
+                "Large pv realization": rng_s.uniform(25, 140, 96) * sun_f,
+                "Large PV park estimation (parks with no realization)": rng_s.uniform(5, 30, 96) * sun_f,
+                "total largepv expected realization": np.zeros(96),  # computed below
+                "Nowcast DA sold": rng_s.uniform(50, 200, 96) * sun_f,
+                "Nowcast realization": rng_s.uniform(45, 190, 96) * sun_f,
+            }
+            for col in solar_cols:
+                mask = df_s[col].isna()
+                df_s.loc[mask, col] = pd.Series(rand_solar[col])[mask].values
+            df_s[solar_cols] = df_s[solar_cols].fillna(0.0)
+        else:
+            rng_s = np.random.default_rng(180318_2)
+            hours = np.array([i // 4 for i in range(96)])
+            sun_f = np.where((hours >= 6) & (hours <= 19), 1.0, 0.0)
+            df_s["LargePV DA sold"] = rng_s.uniform(30, 150, 96) * sun_f
+            df_s["Large pv realization"] = rng_s.uniform(25, 140, 96) * sun_f
+            df_s["Large PV park estimation (parks with no realization)"] = rng_s.uniform(5, 30, 96) * sun_f
+            df_s["total largepv expected realization"] = 0.0
+            df_s["Nowcast DA sold"] = rng_s.uniform(50, 200, 96) * sun_f
+            df_s["Nowcast realization"] = rng_s.uniform(45, 190, 96) * sun_f
+
+        # Compute total largepv expected realization
+        df_s["total largepv expected realization"] = (
+            df_s["Large pv realization"]
+            + df_s["Large PV park estimation (parks with no realization)"]
+        )
 
         st.dataframe(df_s, use_container_width=True, height=700, hide_index=True)
     else:
-        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
+        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026 and 18-03-2026.")
 
 # ── 4) EXPOST (ETPA) ────────────────────────────────────────────────────
 with tab_expost:
@@ -384,7 +486,7 @@ with tab_expost:
 
         st.dataframe(styled_e, use_container_width=True, height=700, hide_index=True)
     else:
-        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
+        st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026 and 18-03-2026.")
 
 # =====================================================================
 # CHARTS (rendered outside tabs so they're always visible below)
