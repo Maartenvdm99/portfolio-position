@@ -254,59 +254,17 @@ with tab_overview:
         styled = display.style.apply(highlight_columns, axis=1).format(precision=1)
         st.dataframe(styled, use_container_width=True, height=700, hide_index=True)
 
-        # ── Charts ──────────────────────────────────────────────────────────
-        # Wind delta = Wind eff - Wind DA
+        # Store chart data in session state so we can render charts outside the tab
         df["Wind delta"] = df["Wind eff"] - df["Wind DA"]
-
-        # Time labels for x-axis (just HH:MM)
-        x_labels = [s.split(" ")[-1] for s in time_slots]
-
-        # 1) Line chart: Total ID position forecast
-        st.subheader("Total ID position forecast")
-        fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(
-            x=x_labels,
-            y=df["Total ID position forecast"],
-            mode="lines",
-            name="Total ID position forecast",
-            line=dict(color="#1f77b4", width=2),
-        ))
-        fig_line.update_layout(
-            xaxis_title="Time",
-            yaxis_title="MW",
-            height=400,
-            margin=dict(l=40, r=20, t=30, b=40),
-            xaxis=dict(tickangle=-45, dtick=4),
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
-
-        # 2) Stacked bar chart: ID trades, DA position, Solar delta, Wind delta, Flex
-        st.subheader("Position breakdown")
-        fig_bar = go.Figure()
-        stack_components = [
-            ("ID trades", df["ID trades"], "#1f77b4"),
-            ("DA position", df["DA position"], "#ff7f0e"),
-            ("Solar delta", df["Solar delta"], "#2ca02c"),
-            ("Wind delta", df["Wind delta"], "#d62728"),
-            ("Flex", df["Flex"], "#9467bd"),
-        ]
-        for name, values, color in stack_components:
-            fig_bar.add_trace(go.Bar(
-                x=x_labels,
-                y=values,
-                name=name,
-                marker_color=color,
-            ))
-        fig_bar.update_layout(
-            barmode="relative",
-            xaxis_title="Time",
-            yaxis_title="MW",
-            height=400,
-            margin=dict(l=40, r=20, t=30, b=40),
-            xaxis=dict(tickangle=-45, dtick=4),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.session_state["chart_data"] = {
+            "x_labels": [s.split(" ")[-1] for s in time_slots],
+            "forecast": df["Total ID position forecast"].tolist(),
+            "id_trades": df["ID trades"].tolist(),
+            "da_position": df["DA position"].tolist(),
+            "solar_delta": df["Solar delta"].tolist(),
+            "wind_delta": df["Wind delta"].tolist(),
+            "flex": df["Flex"].tolist(),
+        }
     else:
         st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
 
@@ -418,3 +376,59 @@ with tab_expost:
         st.dataframe(styled_e, use_container_width=True, height=700, hide_index=True)
     else:
         st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
+
+# =====================================================================
+# CHARTS (rendered outside tabs so they're always visible below)
+# =====================================================================
+if has_data and "chart_data" in st.session_state:
+    cd = st.session_state["chart_data"]
+    x_labels = cd["x_labels"]
+
+    st.markdown("---")
+
+    # 1) Line chart: Total ID position forecast
+    st.subheader("Total ID position forecast")
+    fig_line = go.Figure()
+    fig_line.add_trace(go.Scatter(
+        x=x_labels,
+        y=cd["forecast"],
+        mode="lines",
+        name="Total ID position forecast",
+        line=dict(color="#1f77b4", width=2),
+    ))
+    fig_line.update_layout(
+        xaxis_title="Time",
+        yaxis_title="MW",
+        height=400,
+        margin=dict(l=40, r=20, t=30, b=40),
+        xaxis=dict(tickangle=-45, dtick=4),
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
+
+    # 2) Stacked bar chart: ID trades, DA position, Solar delta, Wind delta, Flex
+    st.subheader("Position breakdown")
+    fig_bar = go.Figure()
+    stack_components = [
+        ("ID trades", cd["id_trades"], "#1f77b4"),
+        ("DA position", cd["da_position"], "#ff7f0e"),
+        ("Solar delta", cd["solar_delta"], "#2ca02c"),
+        ("Wind delta", cd["wind_delta"], "#d62728"),
+        ("Flex", cd["flex"], "#9467bd"),
+    ]
+    for name, values, color in stack_components:
+        fig_bar.add_trace(go.Bar(
+            x=x_labels,
+            y=values,
+            name=name,
+            marker_color=color,
+        ))
+    fig_bar.update_layout(
+        barmode="relative",
+        xaxis_title="Time",
+        yaxis_title="MW",
+        height=400,
+        margin=dict(l=40, r=20, t=30, b=40),
+        xaxis=dict(tickangle=-45, dtick=4),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
