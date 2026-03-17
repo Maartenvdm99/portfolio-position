@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from datetime import date, time, timedelta
 
 st.set_page_config(page_title="Portfolio Position Dashboard", layout="wide")
@@ -252,6 +253,60 @@ with tab_overview:
         st.subheader("Position overview")
         styled = display.style.apply(highlight_columns, axis=1).format(precision=1)
         st.dataframe(styled, use_container_width=True, height=700, hide_index=True)
+
+        # ── Charts ──────────────────────────────────────────────────────────
+        # Wind delta = Wind eff - Wind DA
+        df["Wind delta"] = df["Wind eff"] - df["Wind DA"]
+
+        # Time labels for x-axis (just HH:MM)
+        x_labels = [s.split(" ")[-1] for s in time_slots]
+
+        # 1) Line chart: Total ID position forecast
+        st.subheader("Total ID position forecast")
+        fig_line = go.Figure()
+        fig_line.add_trace(go.Scatter(
+            x=x_labels,
+            y=df["Total ID position forecast"],
+            mode="lines",
+            name="Total ID position forecast",
+            line=dict(color="#1f77b4", width=2),
+        ))
+        fig_line.update_layout(
+            xaxis_title="Time",
+            yaxis_title="MW",
+            height=400,
+            margin=dict(l=40, r=20, t=30, b=40),
+            xaxis=dict(tickangle=-45, dtick=4),
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+
+        # 2) Stacked bar chart: ID trades, DA position, Solar delta, Wind delta, Flex
+        st.subheader("Position breakdown")
+        fig_bar = go.Figure()
+        stack_components = [
+            ("ID trades", df["ID trades"], "#1f77b4"),
+            ("DA position", df["DA position"], "#ff7f0e"),
+            ("Solar delta", df["Solar delta"], "#2ca02c"),
+            ("Wind delta", df["Wind delta"], "#d62728"),
+            ("Flex", df["Flex"], "#9467bd"),
+        ]
+        for name, values, color in stack_components:
+            fig_bar.add_trace(go.Bar(
+                x=x_labels,
+                y=values,
+                name=name,
+                marker_color=color,
+            ))
+        fig_bar.update_layout(
+            barmode="relative",
+            xaxis_title="Time",
+            yaxis_title="MW",
+            height=400,
+            margin=dict(l=40, r=20, t=30, b=40),
+            xaxis=dict(tickangle=-45, dtick=4),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
     else:
         st.info(f"No data available for {selected_date.strftime('%d-%m-%Y')}. Example data is for 17-03-2026.")
 
