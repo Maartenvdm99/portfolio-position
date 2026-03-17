@@ -129,7 +129,6 @@ with tab_overview:
             df["Total ID position realization"] = 0.0
 
         # ── Editable overwrite columns ──────────────────────────────────
-        # Initialize session state for overwrite columns if not present
         overwrite_col_names = [
             "Wind realization overwrite",
             "Nowcast realization overwrite",
@@ -139,26 +138,9 @@ with tab_overview:
             state_key = f"ow_{ow_col}"
             if state_key not in st.session_state:
                 st.session_state[state_key] = df[ow_col].tolist()
-
-        # Build the editable dataframe with only the overwrite columns
-        edit_df = pd.DataFrame({
-            ow_col: st.session_state[f"ow_{ow_col}"] for ow_col in overwrite_col_names
-        })
-
-        st.subheader("Edit overwrite values")
-        edited = st.data_editor(
-            edit_df,
-            use_container_width=False,
-            height=300,
-            hide_index=True,
-            num_rows="fixed",
-            key="overwrite_editor",
-        )
-
-        # Save edits back to session state
-        for ow_col in overwrite_col_names:
-            st.session_state[f"ow_{ow_col}"] = edited[ow_col].tolist()
-            df[ow_col] = edited[ow_col].astype(float)
+            else:
+                # Apply previously edited values from session state
+                df[ow_col] = pd.Series(st.session_state[state_key]).astype(float)
 
         # ── Recalculate derived columns using (potentially edited) overwrites ──
         # Overwrite logic: if overwrite != 0 use it, else use realization
@@ -251,8 +233,35 @@ with tab_overview:
             return styles
 
         st.subheader("Position overview")
-        styled = display.style.apply(highlight_columns, axis=1).format(precision=1)
-        st.dataframe(styled, use_container_width=True, height=700, hide_index=True)
+
+        # Configure columns: overwrite columns are editable, rest are disabled
+        column_config = {}
+        disabled_cols = []
+        for col in display.columns:
+            if col in overwrite_cols:
+                column_config[col] = st.column_config.NumberColumn(
+                    col,
+                    format="%.1f",
+                    default=0.0,
+                )
+            else:
+                disabled_cols.append(col)
+
+        edited_display = st.data_editor(
+            display,
+            use_container_width=True,
+            height=700,
+            hide_index=True,
+            num_rows="fixed",
+            disabled=disabled_cols,
+            column_config=column_config,
+            key="position_editor",
+        )
+
+        # Save edits back to session state and df
+        for ow_col in overwrite_col_names:
+            st.session_state[f"ow_{ow_col}"] = edited_display[ow_col].tolist()
+            df[ow_col] = edited_display[ow_col].astype(float)
 
         # Store chart data in session state so we can render charts outside the tab
         df["Wind delta"] = df["Wind eff"] - df["Wind DA"]
@@ -386,28 +395,9 @@ if has_data and "chart_data" in st.session_state:
 
     st.markdown("---")
 
-    # 1) Line chart: Total ID position forecast
-    st.subheader("Total ID position forecast")
-    fig_line = go.Figure()
-    fig_line.add_trace(go.Scatter(
-        x=x_labels,
-        y=cd["forecast"],
-        mode="lines",
-        name="Total ID position forecast",
-        line=dict(color="#1f77b4", width=2),
-    ))
-    fig_line.update_layout(
-        xaxis_title="Time",
-        yaxis_title="MW",
-        height=400,
-        margin=dict(l=40, r=20, t=30, b=40),
-        xaxis=dict(tickangle=-45, dtick=4),
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
-
-    # 2) Stacked bar chart: ID trades, DA position, Solar delta, Wind delta, Flex
+    # Combined chart: stacked bar breakdown + total forecast line
     st.subheader("Position breakdown")
-    fig_bar = go.Figure()
+    fig = go.Figure()
     stack_components = [
         ("ID trades", cd["id_trades"], "#1f77b4"),
         ("DA position", cd["da_position"], "#ff7f0e"),
@@ -416,19 +406,28 @@ if has_data and "chart_data" in st.session_state:
         ("Flex", cd["flex"], "#9467bd"),
     ]
     for name, values, color in stack_components:
-        fig_bar.add_trace(go.Bar(
+        fig.add_trace(go.Bar(
             x=x_labels,
             y=values,
             name=name,
             marker_color=color,
         ))
-    fig_bar.update_layout(
+    # Total forecast line on top – white and extra thick
+    fig.add_trace(go.Scatter(
+        x=x_labels,
+        y=cd["forecast"],
+        mode="lines",
+        name="Total ID position forecast",
+        line=dict(color="white", width=4),
+    ))
+    fig.update_layout(
         barmode="relative",
         xaxis_title="Time",
         yaxis_title="MW",
-        height=400,
+        height=450,
         margin=dict(l=40, r=20, t=30, b=40),
         xaxis=dict(tickangle=-45, dtick=4),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor="rgba(0,0,0,0)",
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
